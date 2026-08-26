@@ -1,17 +1,6 @@
-@import "tailwindcss";
-
-/* Tell Tailwind to listen to our dark mode toggle */
-@custom-variant dark (&:where(.dark, .dark *));
-
-/* 1. INJECT YOUR OFFICIAL VNCHECK PALETTE */
-@theme {
-  --color-vn-primary: #478ffc;
-  --color-vn-secondary: #83e2f7;
-  --color-vn-navy-100: #001b48;
-  --color-vn-navy-200: #0c2e66;
-  --color-vn-navy-300: #184284;
-  --color-vn-grey-bg: #949597;
-}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 :root {
   --background: #f4f7f9;
