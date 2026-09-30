@@ -101,9 +101,9 @@ export default function PayslipPage() {
   const handleDownload = async (id: number, filePath: string) => {
     setIsDownloading(id);
     try {
-      // PERHATIAN: Ganti 'payslips_bucket' dengan nama bucket Storage yang digunakan Admin
+      // Nama bucket harus sama persis dengan yang dipakai Admin saat upload.
       const { data, error } = await supabase.storage
-        .from("payslips_bucket")
+        .from("payslips")
         .createSignedUrl(filePath, 60); // URL valid selama 60 detik
 
       if (error) throw error;

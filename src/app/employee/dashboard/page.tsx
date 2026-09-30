@@ -163,20 +163,36 @@ export default function EmployeeDashboard() {
   // --- 2. NOTIFICATIONS & MAIN DATA FETCHING ---
   useEffect(() => {
     let channel: any;
+    let isMounted = true;
 
-    const fetchUnreadCount = async () => {
+    // Cuma ambil count -- TIDAK menyentuh channel. Sebelumnya function ini
+    // juga bikin+subscribe channel baru di dalamnya, dan dipanggil ulang
+    // dari callback channel itu sendiri setiap ada notifikasi baru -> nyoba
+    // subscribe channel dengan nama yang sama padahal yang lama masih
+    // aktif -> error "cannot add postgres_changes callbacks ... after
+    // subscribe()" begitu ada event kedua yang masuk.
+    const fetchUnreadCount = async (userId: string) => {
+      const { count } = await supabase
+        .from("notifications")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .eq("is_read", false);
+
+      if (isMounted && count !== null) setUnreadCount(count);
+    };
+
+    const setup = async () => {
       const {
         data: { user },
       } = await supabase.auth.getUser();
       if (!user) return;
 
-      const { count } = await supabase
-        .from("notifications")
-        .select("*", { count: "exact", head: true })
-        .eq("user_id", user.id)
-        .eq("is_read", false);
+      await fetchUnreadCount(user.id);
 
-      if (count !== null) setUnreadCount(count);
+      // Guard tambahan: kalau effect ini sudah di-cleanup (misal React
+      // Strict Mode re-run effect) sebelum await di atas selesai, jangan
+      // lanjut bikin channel baru -- lihat penjelasan sama di EmployeeSidebar.
+      if (!isMounted) return;
 
       channel = supabase
         .channel("dashboard-notifications")
@@ -188,13 +204,17 @@ export default function EmployeeDashboard() {
             table: "notifications",
             filter: `user_id=eq.${user.id}`,
           },
-          () => fetchUnreadCount(),
+          () => {
+            fetchUnreadCount(user.id);
+          },
         )
         .subscribe();
     };
 
-    fetchUnreadCount();
+    setup();
+
     return () => {
+      isMounted = false;
       if (channel) supabase.removeChannel(channel);
     };
   }, [supabase]);
@@ -247,19 +267,14 @@ export default function EmployeeDashboard() {
         let lateCount = 0;
 
         if (monthlyAtt) {
+          // Percaya kolom `status` dari DB (di-set oleh function clock_in,
+          // sumber kebenaran resmi) -- sebelumnya ada recalculation waktu di
+          // sini juga yang gampang drift dari threshold resmi (baru saja
+          // ketauan beda sendiri 09:00 vs 09:30). "Late" dan
+          // "Late - Pending Approval" dua-duanya keitung telat di sini.
           monthlyAtt.forEach((item) => {
             const statusLower = item.status ? item.status.toLowerCase() : "";
-            let isActuallyLate = false;
-            if (item.check_in_time) {
-              const checkInDate = new Date(item.check_in_time);
-              if (
-                checkInDate.getHours() > 9 ||
-                (checkInDate.getHours() === 9 && checkInDate.getMinutes() > 30)
-              ) {
-                isActuallyLate = true;
-              }
-            }
-            if (statusLower.includes("late") || isActuallyLate) {
+            if (statusLower.includes("late")) {
               lateCount++;
             } else {
               onTimeCount++;
@@ -271,7 +286,7 @@ export default function EmployeeDashboard() {
           .from("leaves")
           .select("id", { count: "exact", head: true })
           .eq("user_id", user.id)
-          .eq("status", "approved")
+          .ilike("status", "approved") // case-insensitive: admin set "Approved", bukan "approved"
           .gte("start_date", start);
 
         const totalLeaves = leaveCount || 0;

@@ -142,7 +142,7 @@ export default function EmployeeLeavePage() {
   };
 
   const getStatusColor = (status: string) => {
-    switch (status) {
+    switch (status?.toLowerCase()) {
       case "approved":
         return "text-green-500 bg-green-50 dark:bg-green-500/10 border-green-100 dark:border-green-500/20";
       case "rejected":

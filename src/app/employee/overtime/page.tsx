@@ -32,6 +32,15 @@ export default function EmployeeOvertimePage() {
   const [assignments, setAssignments] = useState<Overtime[]>([]);
 
   useEffect(() => {
+    // PENTING: `channel` & `isMounted` di-scope di LUAR init(), dan cleanup
+    // di-return langsung dari useEffect (bukan dari init()) -- sebelumnya
+    // cleanup-nya nyangkut di dalam init() dan gak pernah benar-benar
+    // dipanggil React, jadi channel lama gak pernah dilepas dan bentrok
+    // sama channel baru pas effect ini jalan ulang (misal React Strict
+    // Mode saat development, atau navigasi bolak-balik ke halaman ini).
+    let channel: any;
+    let isMounted = true;
+
     const init = async () => {
       const {
         data: { user },
@@ -48,10 +57,13 @@ export default function EmployeeOvertimePage() {
         .eq("user_id", user.id)
         .order("date", { ascending: false });
 
+      if (!isMounted) return;
       setAssignments((data as Overtime[]) || []);
       setLoading(false);
 
-      const channel = supabase
+      if (!isMounted) return;
+
+      channel = supabase
         .channel("overtime-updates")
         .on(
           "postgres_changes",
@@ -74,12 +86,13 @@ export default function EmployeeOvertimePage() {
           },
         )
         .subscribe();
-
-      return () => {
-        supabase.removeChannel(channel);
-      };
     };
     init();
+
+    return () => {
+      isMounted = false;
+      if (channel) supabase.removeChannel(channel);
+    };
   }, [router, supabase]);
 
   // --- FIXED: Badge Logic completely controlled by Database Status ---

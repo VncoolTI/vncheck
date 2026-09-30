@@ -93,6 +93,10 @@ export default function EmployeeKanbanPage() {
   const [userName, setUserName] = useState<string>("Me");
   const [userRole, setUserRole] = useState<string>("admin");
   const [employeesList, setEmployeesList] = useState<any[]>([]);
+  // Khusus admin/super_admin: harus pilih dulu (karyawan tertentu, atau
+  // "all") sebelum board ke-load, biar gak langsung "membludak" nampilin
+  // task semua orang begitu admin buka halaman ini.
+  const [adminTaskFilter, setAdminTaskFilter] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
   const [columnsData, setColumnsData] = useState<Record<string, Task[]>>({
@@ -157,17 +161,30 @@ export default function EmployeeKanbanPage() {
   const [unreadCount, setUnreadCount] = useState(0);
   useEffect(() => {
     let channel: any;
-    const fetchUnreadCount = async () => {
+    let isMounted = true;
+
+    // Cuma ambil count -- TIDAK menyentuh channel. Sebelumnya function ini
+    // juga bikin+subscribe channel baru di dalamnya, dan dipanggil ulang
+    // dari callback channel itu sendiri setiap ada notifikasi baru -> error
+    // "cannot add postgres_changes callbacks ... after subscribe()".
+    const fetchUnreadCount = async (userId: string) => {
+      const { count } = await supabase
+        .from("notifications")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .eq("is_read", false);
+      if (isMounted && count !== null) setUnreadCount(count);
+    };
+
+    const setup = async () => {
       const {
         data: { user },
       } = await supabase.auth.getUser();
       if (!user) return;
-      const { count } = await supabase
-        .from("notifications")
-        .select("*", { count: "exact", head: true })
-        .eq("user_id", user.id)
-        .eq("is_read", false);
-      if (count !== null) setUnreadCount(count);
+
+      await fetchUnreadCount(user.id);
+      if (!isMounted) return;
+
       channel = supabase
         .channel("task-page-notifications")
         .on(
@@ -178,12 +195,16 @@ export default function EmployeeKanbanPage() {
             table: "notifications",
             filter: `user_id=eq.${user.id}`,
           },
-          () => fetchUnreadCount(),
+          () => {
+            fetchUnreadCount(user.id);
+          },
         )
         .subscribe();
     };
-    fetchUnreadCount();
+
+    setup();
     return () => {
+      isMounted = false;
       if (channel) supabase.removeChannel(channel);
     };
   }, [supabase]);
@@ -257,14 +278,40 @@ export default function EmployeeKanbanPage() {
 
     // --- ROLE-BASED ACCESS LOGIC ---
     if (userRole === "admin" || userRole === "super_admin") {
-      // ADMIN/SUPER_ADMIN VIEW: Fetch absolutely everything.
-      query = supabase
-        .from("tasks")
-        .select(
-          "*, task_assignees(employee_id), work_types(id, name, icon_name, icon_color)",
-        )
-        .neq("status", "Cancelled")
-        .order("task_date", { ascending: true });
+      if (!adminTaskFilter) {
+        // Belum pilih apa-apa -- jangan fetch dulu, biar gak numpuk semua
+        // task sekaligus. UI nampilin prompt "pilih karyawan dulu".
+        setListTasks([]);
+        setColumnsData({
+          "To do": [],
+          "In Progress": [],
+          "In Review": [],
+          Done: [],
+        });
+        setLoading(false);
+        return;
+      }
+
+      if (adminTaskFilter === "all") {
+        // ADMIN/SUPER_ADMIN VIEW: Fetch absolutely everything.
+        query = supabase
+          .from("tasks")
+          .select(
+            "*, task_assignees(employee_id), work_types(id, name, icon_name, icon_color)",
+          )
+          .neq("status", "Cancelled")
+          .order("task_date", { ascending: true });
+      } else {
+        // Admin memilih 1 karyawan spesifik dari dropdown.
+        query = supabase
+          .from("tasks")
+          .select(
+            "*, task_assignees!inner(employee_id), work_types(id, name, icon_name, icon_color)",
+          )
+          .eq("task_assignees.employee_id", adminTaskFilter)
+          .neq("status", "Cancelled")
+          .order("task_date", { ascending: true });
+      }
     } else {
       // EMPLOYEE VIEW: Only fetch tasks explicitly assigned to them.
       query = supabase
@@ -322,7 +369,7 @@ export default function EmployeeKanbanPage() {
       setColumnsData(grouped);
     }
     setLoading(false);
-  }, [user, userRole, supabase]);
+  }, [user, userRole, supabase, adminTaskFilter]);
 
   useEffect(() => {
     fetchTasks();
@@ -594,6 +641,26 @@ export default function EmployeeKanbanPage() {
         })
         .eq("id", updatedTask.id);
       if (error) throw error;
+
+      // PENTING: papan task (admin & employee) baca assignment dari
+      // task_assignees, BUKAN dari tasks.assignee_id. Tanpa sinkronisasi ini,
+      // reassign lewat modal ini tidak akan pernah memindahkan task ke board
+      // karyawan yang baru -- assignee_id berubah, tapi task tetap nyangkut
+      // di karyawan lama selamanya.
+      // Catatan: form ini cuma dukung 1 assignee (single assignee_name),
+      // jadi sinkronisasi di sini menyamakan task_assignees jadi 1 baris saja
+      // -- kalau task ini sebelumnya multi-assignee (dibuat lewat Add Task
+      // admin), assignee lain akan hilang begitu di-edit lewat modal ini.
+      if (finalAssigneeId) {
+        await supabase
+          .from("task_assignees")
+          .delete()
+          .eq("task_id", updatedTask.id);
+        await supabase
+          .from("task_assignees")
+          .insert({ task_id: updatedTask.id, employee_id: finalAssigneeId });
+      }
+
       setEditingTask(null);
       await fetchTasks();
     } catch (err: any) {
@@ -830,6 +897,30 @@ export default function EmployeeKanbanPage() {
             </div>
           </div>
         </div>
+
+        {/* Filter karyawan -- khusus admin/super_admin, biar gak langsung
+            nampilin task semua orang sekaligus begitu halaman dibuka */}
+        {(userRole === "admin" || userRole === "super_admin") && (
+          <div className="bg-white/90 dark:bg-[#001436]/90 backdrop-blur-sm px-6 py-3 flex items-center gap-3 border-b border-gray-200 dark:border-white/10 sticky top-24 z-10">
+            <span className="text-xs font-bold text-gray-500 dark:text-white/60 uppercase shrink-0">
+              Lihat task:
+            </span>
+            <select
+              value={adminTaskFilter}
+              onChange={(e) => setAdminTaskFilter(e.target.value)}
+              className="text-sm font-bold rounded-lg border border-gray-300 dark:border-white/20 bg-white dark:bg-[#001436] text-gray-800 dark:text-white px-3 py-1.5 outline-none focus:border-vn-primary max-w-[240px]"
+            >
+              <option value="">-- Pilih karyawan --</option>
+              <option value="all">Semua Karyawan</option>
+              {employeesList.map((emp) => (
+                <option key={emp.id} value={emp.id}>
+                  {emp.full_name}
+                  {emp.id === user?.id ? " (Saya)" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* Gradient content area — tabs + view */}
         <div className="flex-1 flex flex-col bg-linear-to-b from-[#478FFC] to-[#83E2F7] dark:from-[#001B48] dark:to-[#3B7CDE] text-gray-800 relative pb-24">

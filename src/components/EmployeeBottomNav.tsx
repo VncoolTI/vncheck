@@ -27,19 +27,32 @@ export default function EmployeeBottomNav() {
   useEffect(() => {
     let channel: any;
 
-    const fetchUnreadCount = async () => {
+    let isMounted = true;
+
+    const fetchUnreadCount = async (userId: string) => {
+      const { count } = await supabase
+        .from("notifications")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .eq("is_read", false);
+
+      if (isMounted && count !== null) setUnreadCount(count);
+    };
+
+    const setup = async () => {
       const {
         data: { user },
       } = await supabase.auth.getUser();
       if (!user) return;
 
-      const { count } = await supabase
-        .from("notifications")
-        .select("*", { count: "exact", head: true })
-        .eq("user_id", user.id)
-        .eq("is_read", false);
+      await fetchUnreadCount(user.id);
 
-      if (count !== null) setUnreadCount(count);
+      // PENTING: kalau effect ini sudah di-cleanup (misal React Strict Mode
+      // re-run effect saat development) SEBELUM await di atas selesai,
+      // jangan lanjut bikin channel baru -- channel dari effect run
+      // berikutnya bisa saja sudah subscribe duluan dengan nama yang sama,
+      // dan .on() di bawah ini bakal error "... after subscribe()".
+      if (!isMounted) return;
 
       channel = supabase
         .channel("bottom-nav-notifications")
@@ -52,15 +65,16 @@ export default function EmployeeBottomNav() {
             filter: `user_id=eq.${user.id}`,
           },
           () => {
-            fetchUnreadCount();
+            fetchUnreadCount(user.id);
           },
         )
         .subscribe();
     };
 
-    fetchUnreadCount();
+    setup();
 
     return () => {
+      isMounted = false;
       if (channel) supabase.removeChannel(channel);
     };
   }, [supabase]);

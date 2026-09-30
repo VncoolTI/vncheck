@@ -40,6 +40,12 @@ export default function EmployeeScanPage() {
     null,
   );
   const [locationError, setLocationError] = useState("");
+  // 'office' (default, wajib GPS) atau 'flexible' (karyawan lagi ditempatkan
+  // di luar kantor -- GPS tetap dicoba direkam kalau device kasih izin,
+  // tapi tidak jadi syarat wajib). Diatur admin lewat halaman Edit Employee.
+  const [attendanceMode, setAttendanceMode] = useState<"office" | "flexible">(
+    "office",
+  );
 
   // --- STATE MODALS (PENGGANTI ALERT) ---
   const [modalState, setModalState] = useState<{
@@ -88,7 +94,7 @@ export default function EmployeeScanPage() {
     };
 
     const errorHandlerLowAccuracy = (error: GeolocationPositionError) => {
-      console.error("Location Error:", error);
+      console.warn("Location unavailable:", error.code, error.message);
       setIsLocating(false);
       if (error.code === 1) setLocationError("Izin lokasi ditolak.");
       else if (error.code === 2) setLocationError("Sinyal GPS hilang.");
@@ -124,6 +130,15 @@ export default function EmployeeScanPage() {
           error: authError,
         } = await supabase.auth.getUser();
         if (authError || !user) return;
+
+        const { data: profile } = await supabase
+          .from("employees")
+          .select("attendance_mode")
+          .eq("id", user.id)
+          .maybeSingle();
+        if (profile?.attendance_mode === "flexible") {
+          setAttendanceMode("flexible");
+        }
 
         const today = format(new Date(), "yyyy-MM-dd");
         const { data: att, error: dbError } = await supabase
@@ -223,7 +238,11 @@ export default function EmployeeScanPage() {
       const uploadedImagePath = uploadData.path;
       const ipAddress = await getIpAddress();
       const userAgent = navigator.userAgent;
-      const coordsStr = `POINT(${location?.lng} ${location?.lat})`;
+      // Karyawan 'flexible' boleh lanjut tanpa lokasi -- kirim null, bukan
+      // string "POINT(undefined undefined)" yang bakal error di server.
+      const coordsStr = location
+        ? `POINT(${location.lng} ${location.lat})`
+        : null;
 
       // --- CLOCK IN LOGIC ---
       if (status === "ClockIn") {
@@ -244,11 +263,15 @@ export default function EmployeeScanPage() {
 
         if (serverStatus === "Early") {
           modalTitle = "Early Arrival!";
-          modalMessage = "You clocked in before 09:00. Keep up the great work!";
+          modalMessage = "You clocked in before 08:30. Keep up the great work!";
+        } else if (serverStatus === "Late - Pending Approval") {
+          modalTitle = "Clock In Recorded (Late)";
+          modalMessage =
+            "You clocked in after 09:15. This has been flagged for admin/HR approval.";
         } else if (serverStatus === "Late") {
           modalTitle = "Clock In Successful (Late)";
           modalMessage =
-            "You clocked in after 09:00. The server has recorded the delay.";
+            "You clocked in after 10:00. The server has recorded the delay.";
         }
 
         // --- NEW: SEND NOTIFICATION TO INBOX ---
@@ -256,7 +279,7 @@ export default function EmployeeScanPage() {
           {
             user_id: user.id,
             title: modalTitle,
-            message: `You clocked in at ${format(now, "HH:mm")}. ${modalMessage}`,
+            message: `You clocked in at ${data?.time ?? format(now, "HH:mm")}. ${modalMessage}`,
             type: "attendance",
           },
         ]);
@@ -295,7 +318,7 @@ export default function EmployeeScanPage() {
           {
             user_id: user.id,
             title: modalTitle,
-            message: `You clocked out at ${format(now, "HH:mm")}. ${modalMessage}`,
+            message: `You clocked out at ${data?.time ?? format(now, "HH:mm")}. ${modalMessage}`,
             type: "attendance",
           },
         ]);
@@ -322,7 +345,10 @@ export default function EmployeeScanPage() {
 
   // --- 5. HANDLE CLICK BUTTON (VALIDASI AWAL) ---
   const handleCaptureClick = () => {
-    if (!location) {
+    // GPS cuma wajib untuk karyawan mode 'office'. Karyawan 'flexible' boleh
+    // lanjut walau lokasi belum/tidak terdeteksi (lokasi tetap dicoba
+    // direkam di background kalau tersedia -- lihat handleGetLocation).
+    if (attendanceMode === "office" && !location) {
       setModalState({
         isOpen: true,
         type: "error",
@@ -517,8 +543,20 @@ export default function EmployeeScanPage() {
               <span className="text-[10px] md:text-xs font-mono font-medium text-gray-600 dark:text-white/90 truncate">
                 {location
                   ? `${location.lat.toFixed(4)}, ${location.lng.toFixed(4)}`
-                  : "Locating..."}
+                  : isLocating
+                    ? "Locating..."
+                    : attendanceMode === "flexible"
+                      ? "Not required"
+                      : locationError || "Locating..."}
               </span>
+              {!location &&
+                !isLocating &&
+                locationError &&
+                attendanceMode !== "flexible" && (
+                  <span className="text-[10px] text-red-500 font-bold mt-0.5">
+                    Aktifkan izin lokasi lalu tekan tombol refresh.
+                  </span>
+                )}
             </div>
             <div className="flex flex-col items-end">
               <span className="text-[10px] text-gray-400 dark:text-white/60 font-bold">
@@ -537,9 +575,13 @@ export default function EmployeeScanPage() {
         <div className="mb-2 shrink-0 animate-in slide-in-from-bottom-6 duration-700 flex flex-col items-center">
           <button
             onClick={handleCaptureClick}
-            disabled={processing || !location || !isCameraReady}
+            disabled={
+              processing ||
+              (attendanceMode === "office" && !location) ||
+              !isCameraReady
+            }
             className={`w-16 h-16 md:w-20 md:h-20 bg-transparent border-[3px] border-vn-primary/30 dark:border-white/40 rounded-full flex items-center justify-center transition-all active:scale-95 group 
-                    ${!location || !isCameraReady ? "opacity-50 cursor-not-allowed" : "hover:border-vn-primary dark:hover:border-white"}`}
+                    ${(attendanceMode === "office" && !location) || !isCameraReady ? "opacity-50 cursor-not-allowed" : "hover:border-vn-primary dark:hover:border-white"}`}
           >
             <div
               className={`w-12 h-12 md:w-16 md:h-16 rounded-full flex items-center justify-center shadow-lg transition-all duration-300

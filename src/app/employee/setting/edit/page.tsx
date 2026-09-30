@@ -115,8 +115,8 @@ export default function EditProfilePage() {
 
         // B. Update Password
         if (password) {
-          if (password.length < 6)
-            throw new Error("Password must be at least 6 characters.");
+          if (password.length < 8)
+            throw new Error("Password must be at least 8 characters.");
           const { error: passError } = await supabase.auth.updateUser({
             password: password,
           });

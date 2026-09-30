@@ -145,6 +145,7 @@ export default function NotificationPage() {
   useEffect(() => {
     setMounted(true);
     let channel: any;
+    let isMounted = true;
 
     const setupData = async () => {
       setLoading(true);
@@ -190,6 +191,13 @@ export default function NotificationPage() {
       setAllData(mergedList);
       setLoading(false);
 
+      // Guard: kalau effect ini sudah di-cleanup (misal React Strict Mode
+      // re-run effect saat development) sebelum semua await di atas
+      // selesai, jangan lanjut bikin channel baru -- effect run berikutnya
+      // bisa saja sudah subscribe duluan dengan nama channel yang sama, dan
+      // .on() di bawah ini bakal error "... after subscribe()".
+      if (!isMounted) return;
+
       // Listen for both INSERTS and UPDATES
       channel = supabase
         .channel("realtime-notifications")
@@ -231,6 +239,7 @@ export default function NotificationPage() {
 
     setupData();
     return () => {
+      isMounted = false;
       if (channel) supabase.removeChannel(channel);
     };
   }, [supabase]);
